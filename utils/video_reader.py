@@ -259,7 +259,7 @@ def load_video_1p5_in_chunks(
     chunk_frames: int = 24,
     ffmpeg_path: str = "ffmpeg",
 ) -> Generator[np.ndarray, None, None]:
-  """Streams UVQ 1.5 input video in normalized chunks.
+  """Streams UVQ 1.5 input video in uint8 chunks.
 
   The stream always yields exactly ``video_length * video_fps`` frames (unless
   ffmpeg fails), padding with zeros if decode output is truncated.
@@ -310,10 +310,6 @@ def load_video_1p5_in_chunks(
   max_chunk_bytes = chunk_frames * single_frame_size
   byte_buffer = bytearray(max_chunk_bytes)
   byte_buffer_view = memoryview(byte_buffer)
-  float_buffer = np.empty(
-      (chunk_frames, video_height, video_width, 3), dtype=np.float32
-  )
-
   stderr_file = tempfile.TemporaryFile(mode="w+b")
   process = subprocess.Popen(
       cmd,
@@ -348,12 +344,11 @@ def load_video_1p5_in_chunks(
       uint_chunk = np.frombuffer(
           byte_buffer, dtype=np.uint8, count=current_chunk_bytes
       ).reshape((current_chunk_frames, video_height, video_width, 3))
-      float_chunk = float_buffer[:current_chunk_frames]
-      np.multiply(uint_chunk, 1.0 / 255.0, out=float_chunk, casting="unsafe")
-      float_chunk -= 0.5
-      float_chunk *= 2.0
 
-      yield float_chunk
+      # Return a copy so each yielded chunk has an independent backing buffer.
+      # This avoids retaining/reusing a large mutable buffer across iterations
+      # in downstream frameworks.
+      yield uint_chunk.copy()
       frames_emitted += current_chunk_frames
 
     return_code = process.wait()

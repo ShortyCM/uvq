@@ -111,6 +111,7 @@ class UVQ1p5(nn.Module):
       ffmpeg_path: str = "ffmpeg",
       device: str = "cpu",
       chunk_frames: int = 24,
+      include_per_frame_stats: bool = False,
   ) -> dict[str, Any]:
     """Runs UVQ 1.5 inference on a video file.
 
@@ -124,12 +125,13 @@ class UVQ1p5(nn.Module):
       ffmpeg_path: Path to ffmpeg executable.
       device: Device to run inference on (e.g., 'cpu' or 'cuda').
       chunk_frames: Number of frames to decode/infer per chunk.
+      include_per_frame_stats: Whether to include per-frame outputs in results.
 
     Returns:
       A dictionary containing the overall UVQ 1.5 score, per-frame scores,
       and frame indices.
     """
-    frame_scores = []
+    frame_scores = [] if include_per_frame_stats else None
     running_sum = 0.0
     total_frames = 0
 
@@ -147,12 +149,26 @@ class UVQ1p5(nn.Module):
     with torch.inference_mode():
       for chunk in chunks:
         # Convert (frames, H, W, 3) -> (frames, 1, 3, H, W)
-        chunk_tensor = torch.from_numpy(chunk).permute(0, 3, 1, 2).unsqueeze(1)
-        prediction_chunk = self.uvq1p5_core(chunk_tensor.to(device))
+        # Normalize in torch to avoid a second large float numpy buffer.
+        chunk_tensor = (
+            torch.from_numpy(chunk)
+            .to(device=device, dtype=torch.float32)
+            .permute(0, 3, 1, 2)
+            .unsqueeze(1)
+        )
+        chunk_tensor = (chunk_tensor / 255.0 - 0.5) * 2.0
+
+        prediction_chunk = self.uvq1p5_core(chunk_tensor)
         prediction_values = prediction_chunk.flatten().detach().cpu().tolist()
-        frame_scores.extend(prediction_values)
+        if include_per_frame_stats and frame_scores is not None:
+          frame_scores.extend(prediction_values)
         running_sum += float(sum(prediction_values))
         total_frames += len(prediction_values)
+
+        del prediction_chunk
+        del chunk_tensor
+        if device == "cuda":
+          torch.cuda.empty_cache()
 
     if total_frames == 0:
       raise RuntimeError(
@@ -161,18 +177,18 @@ class UVQ1p5(nn.Module):
 
     video_score = running_sum / total_frames
 
-    if orig_fps:
-      frame_indices = [
-          int(round(i * orig_fps / fps)) for i in range(len(frame_scores))
-      ]
-    else:
-      frame_indices = list(range(len(frame_scores)))
+    results = {"uvq1p5_score": video_score}
+    if include_per_frame_stats and frame_scores is not None:
+      if orig_fps:
+        frame_indices = [
+            int(round(i * orig_fps / fps)) for i in range(len(frame_scores))
+        ]
+      else:
+        frame_indices = list(range(len(frame_scores)))
+      results["per_frame_scores"] = frame_scores
+      results["frame_indices"] = frame_indices
 
-    return {
-        "uvq1p5_score": video_score,
-        "per_frame_scores": frame_scores,
-        "frame_indices": frame_indices,
-    }
+    return results
 
   def load_video(
       self,

@@ -98,6 +98,7 @@ def run_batch_inference(args):
             orig_fps=orig_fps,
             ffmpeg_path=args.ffmpeg_path,
             device=args.device,
+            include_per_frame_stats=False,
         )
         score = results["uvq1p5_score"]
       elif args.model_version == "1.0":
@@ -170,6 +171,7 @@ def run_single_inference(args):
         orig_fps=orig_fps,
         ffmpeg_path=args.ffmpeg_path,
         device=args.device,
+        include_per_frame_stats=args.output_all_stats,
     )
   elif args.model_version == "1.0":
     uvq_inference = uvq1p0.UVQ1p0()
