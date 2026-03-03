@@ -312,17 +312,12 @@ def load_video_1p5_in_chunks(
       (chunk_frames, video_height, video_width, 3), dtype=np.float32
   )
 
-  stderr_file = tempfile.TemporaryFile()
   process = subprocess.Popen(
       cmd,
       stdout=subprocess.PIPE,
-      stderr=stderr_file,
+      stderr=subprocess.PIPE,
       shell=False,
   )
-
-  def _read_stderr() -> str:
-    stderr_file.seek(0)
-    return stderr_file.read().decode("utf-8", errors="replace")
 
   decoded_frames = 0
   frames_emitted = 0
@@ -358,27 +353,19 @@ def load_video_1p5_in_chunks(
       yield float_chunk
       frames_emitted += current_chunk_frames
 
-    intentional_stop = False
-    if process.poll() is None:
-      intentional_stop = True
-      process.terminate()
-
-    try:
-      return_code = process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-      process.kill()
-      return_code = process.wait(timeout=5)
-
-    if decoded_frames == 0:
-      raise RuntimeError(
-          f"Decoding failed to output any frames for {filepath}.\n"
-          f"ffmpeg stderr:\n{_read_stderr()}"
-      )
-
-    if return_code != 0 and not intentional_stop:
+    return_code = process.wait()
+    if return_code != 0:
+      stderr_output = process.stderr.read().decode("utf-8", errors="replace")
       raise RuntimeError(
           "ffmpeg failed while decoding "
-          f"{filepath} with return code {return_code}:\n{_read_stderr()}"
+          f"{filepath} with return code {return_code}:\n{stderr_output}"
+      )
+
+    if decoded_frames == 0:
+      stderr_output = process.stderr.read().decode("utf-8", errors="replace")
+      raise RuntimeError(
+          f"Decoding failed to output any frames for {filepath}.\n"
+          f"ffmpeg stderr:\n{stderr_output}"
       )
 
     if decoded_frames < expected_frames:
@@ -397,5 +384,6 @@ def load_video_1p5_in_chunks(
         process.wait(timeout=5)
       except subprocess.TimeoutExpired:
         process.kill()
-        process.wait(timeout=5)
-    stderr_file.close()
+        process.wait()
+    if process.stderr is not None:
+      process.stderr.close()
