@@ -135,29 +135,36 @@ class UVQ1p5(nn.Module):
     frame_scores = [] if include_per_frame_stats else None
     running_sum = 0.0
     total_frames = 0
+    video_height = 1080
+    video_width = 1920
 
     chunks = video_reader.load_video_1p5_in_chunks(
         video_filename,
         video_length,
         transpose,
         video_fps=fps,
-        video_height=1080,
-        video_width=1920,
+        video_height=video_height,
+        video_width=video_width,
         chunk_frames=chunk_frames,
         ffmpeg_path=ffmpeg_path,
     )
 
+    # Reuse one fixed-size inference tensor as a FIFO-style working buffer.
+    # This keeps host/device allocations bounded by ``chunk_frames``.
+    chunk_work_buffer = torch.empty(
+        (chunk_frames, 1, 3, video_height, video_width),
+        dtype=torch.float32,
+        device=device,
+    )
+
     with torch.inference_mode():
       for chunk in chunks:
-        # Convert (frames, H, W, 3) -> (frames, 1, 3, H, W)
-        # Normalize in torch to avoid a second large float numpy buffer.
-        chunk_tensor = (
-            torch.from_numpy(chunk)
-            .to(device=device, dtype=torch.float32)
-            .permute(0, 3, 1, 2)
-            .unsqueeze(1)
-        )
-        chunk_tensor = (chunk_tensor / 255.0 - 0.5) * 2.0
+        current_frames = chunk.shape[0]
+        chunk_cpu_view = torch.from_numpy(chunk).permute(0, 3, 1, 2).unsqueeze(1)
+
+        chunk_tensor = chunk_work_buffer[:current_frames]
+        chunk_tensor.copy_(chunk_cpu_view)
+        chunk_tensor.div_(255.0).sub_(0.5).mul_(2.0)
 
         prediction_chunk = self.uvq1p5_core(chunk_tensor)
         running_sum += float(prediction_chunk.sum().item())
@@ -169,7 +176,7 @@ class UVQ1p5(nn.Module):
           )
 
         del prediction_chunk
-        del chunk_tensor
+        del chunk_cpu_view
         del chunk
         gc.collect()
         if device == "cuda":
