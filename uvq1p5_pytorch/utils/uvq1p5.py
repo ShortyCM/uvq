@@ -42,7 +42,7 @@ sys.path.append(
 import video_reader
 
 
-INFERENCE_FRAMES_PER_STEP = 1
+INFERENCE_FRAMES_PER_STEP = 24
 
 
 class UVQ1p5Core(nn.Module):
