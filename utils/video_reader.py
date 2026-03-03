@@ -312,10 +312,11 @@ def load_video_1p5_in_chunks(
       (chunk_frames, video_height, video_width, 3), dtype=np.float32
   )
 
+  stderr_file = tempfile.TemporaryFile(mode="w+b")
   process = subprocess.Popen(
       cmd,
       stdout=subprocess.PIPE,
-      stderr=subprocess.PIPE,
+      stderr=stderr_file,
       shell=False,
   )
 
@@ -355,14 +356,16 @@ def load_video_1p5_in_chunks(
 
     return_code = process.wait()
     if return_code != 0:
-      stderr_output = process.stderr.read().decode("utf-8", errors="replace")
+      stderr_file.seek(0)
+      stderr_output = stderr_file.read().decode("utf-8", errors="replace")
       raise RuntimeError(
           "ffmpeg failed while decoding "
           f"{filepath} with return code {return_code}:\n{stderr_output}"
       )
 
     if decoded_frames == 0:
-      stderr_output = process.stderr.read().decode("utf-8", errors="replace")
+      stderr_file.seek(0)
+      stderr_output = stderr_file.read().decode("utf-8", errors="replace")
       raise RuntimeError(
           f"Decoding failed to output any frames for {filepath}.\n"
           f"ffmpeg stderr:\n{stderr_output}"
@@ -385,5 +388,4 @@ def load_video_1p5_in_chunks(
       except subprocess.TimeoutExpired:
         process.kill()
         process.wait()
-    if process.stderr is not None:
-      process.stderr.close()
+    stderr_file.close()
