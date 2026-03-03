@@ -42,6 +42,9 @@ sys.path.append(
 import video_reader
 
 
+INFERENCE_FRAMES_PER_STEP = 1
+
+
 class UVQ1p5Core(nn.Module):
   """UVQ 1.5 core model."""
 
@@ -151,8 +154,9 @@ class UVQ1p5(nn.Module):
 
     # Reuse one fixed-size inference tensor as a FIFO-style working buffer.
     # This keeps host/device allocations bounded by ``chunk_frames``.
+    inference_frames_per_step = min(chunk_frames, INFERENCE_FRAMES_PER_STEP)
     chunk_work_buffer = torch.empty(
-        (chunk_frames, 1, 3, video_height, video_width),
+        (inference_frames_per_step, 1, 3, video_height, video_width),
         dtype=torch.float32,
         device=device,
     )
@@ -162,25 +166,30 @@ class UVQ1p5(nn.Module):
         current_frames = chunk.shape[0]
         chunk_cpu_view = torch.from_numpy(chunk).permute(0, 3, 1, 2).unsqueeze(1)
 
-        chunk_tensor = chunk_work_buffer[:current_frames]
-        chunk_tensor.copy_(chunk_cpu_view)
-        chunk_tensor.div_(255.0).sub_(0.5).mul_(2.0)
+        for frame_offset in range(0, current_frames, inference_frames_per_step):
+          frame_end = min(frame_offset + inference_frames_per_step, current_frames)
+          frame_count = frame_end - frame_offset
 
-        prediction_chunk = self.uvq1p5_core(chunk_tensor)
-        running_sum += float(prediction_chunk.sum().item())
-        total_frames += int(prediction_chunk.numel())
+          chunk_tensor = chunk_work_buffer[:frame_count]
+          chunk_tensor.copy_(chunk_cpu_view[frame_offset:frame_end])
+          chunk_tensor.div_(255.0).sub_(0.5).mul_(2.0)
 
-        if include_per_frame_stats and frame_scores is not None:
-          frame_scores.extend(
-              prediction_chunk.flatten().detach().cpu().tolist()
-          )
+          prediction_chunk = self.uvq1p5_core(chunk_tensor)
+          running_sum += float(prediction_chunk.sum().item())
+          total_frames += int(prediction_chunk.numel())
 
-        del prediction_chunk
+          if include_per_frame_stats and frame_scores is not None:
+            frame_scores.extend(
+                prediction_chunk.flatten().detach().cpu().tolist()
+            )
+
+          del prediction_chunk
+          gc.collect()
+          if device == "cuda":
+            torch.cuda.empty_cache()
+
         del chunk_cpu_view
         del chunk
-        gc.collect()
-        if device == "cuda":
-          torch.cuda.empty_cache()
 
     if total_frames == 0:
       raise RuntimeError(
