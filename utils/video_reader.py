@@ -19,6 +19,7 @@ import logging
 import os
 import subprocess
 import tempfile
+from collections.abc import Generator
 
 import numpy as np
 
@@ -246,3 +247,143 @@ def load_video_1p5(
   logging.info("Load %s done successfully.", filepath)
 
   return video, num_real_frames
+
+
+def load_video_1p5_in_chunks(
+    filepath: str,
+    video_length: int,
+    transpose: bool = False,
+    video_fps: int = 1,
+    video_height: int = 1080,
+    video_width: int = 1920,
+    chunk_frames: int = 24,
+    ffmpeg_path: str = "ffmpeg",
+) -> Generator[np.ndarray, None, None]:
+  """Streams UVQ 1.5 input video in normalized chunks.
+
+  The stream always yields exactly ``video_length * video_fps`` frames (unless
+  ffmpeg fails), padding with zeros if decode output is truncated.
+  """
+  if chunk_frames <= 0:
+    raise ValueError(f"chunk_frames must be positive, got {chunk_frames}")
+
+  transpose_filters = ["transpose=2"] if transpose else []
+  filter_chain = ",".join(
+      transpose_filters
+      + [
+          (
+              f"scale=w={video_width}:h={video_height}:flags=bicubic,"
+              "format=rgb24"
+          )
+      ]
+  )
+
+  cmd = [
+      ffmpeg_path,
+      "-loglevel",
+      "error",
+      "-nostats",
+      "-i",
+      filepath,
+      "-vf",
+      filter_chain,
+      "-r",
+      str(video_fps),
+      "-f",
+      "rawvideo",
+      "-pix_fmt",
+      "rgb24",
+      "pipe:1",
+  ]
+  logging.info("Run with cmd: %s", " ".join(cmd))
+
+  single_frame_size = video_width * video_height * 3
+  expected_frames = video_length * video_fps
+  if expected_frames <= 0:
+    raise ValueError(
+        "Expected frame count must be positive. Got "
+        f"video_length={video_length}, video_fps={video_fps}"
+    )
+
+  max_chunk_bytes = chunk_frames * single_frame_size
+  byte_buffer = bytearray(max_chunk_bytes)
+  byte_buffer_view = memoryview(byte_buffer)
+  float_buffer = np.empty(
+      (chunk_frames, video_height, video_width, 3), dtype=np.float32
+  )
+
+  process = subprocess.Popen(
+      cmd,
+      stdout=subprocess.PIPE,
+      stderr=subprocess.PIPE,
+      shell=False,
+  )
+
+  decoded_frames = 0
+  frames_emitted = 0
+  try:
+    assert process.stdout is not None
+    while frames_emitted < expected_frames:
+      current_chunk_frames = min(chunk_frames, expected_frames - frames_emitted)
+      current_chunk_bytes = current_chunk_frames * single_frame_size
+
+      bytes_read = 0
+      while bytes_read < current_chunk_bytes:
+        read_count = process.stdout.readinto(
+            byte_buffer_view[bytes_read:current_chunk_bytes]
+        )
+        if not read_count:
+          break
+        bytes_read += read_count
+
+      if bytes_read < current_chunk_bytes:
+        byte_buffer_view[bytes_read:current_chunk_bytes] = b"\x00" * (
+            current_chunk_bytes - bytes_read
+        )
+
+      decoded_frames += bytes_read // single_frame_size
+      uint_chunk = np.frombuffer(
+          byte_buffer, dtype=np.uint8, count=current_chunk_bytes
+      ).reshape((current_chunk_frames, video_height, video_width, 3))
+      float_chunk = float_buffer[:current_chunk_frames]
+      np.multiply(uint_chunk, 1.0 / 255.0, out=float_chunk, casting="unsafe")
+      float_chunk -= 0.5
+      float_chunk *= 2.0
+
+      yield float_chunk
+      frames_emitted += current_chunk_frames
+
+    return_code = process.wait()
+    if return_code != 0:
+      stderr_output = process.stderr.read().decode("utf-8", errors="replace")
+      raise RuntimeError(
+          "ffmpeg failed while decoding "
+          f"{filepath} with return code {return_code}:\n{stderr_output}"
+      )
+
+    if decoded_frames == 0:
+      stderr_output = process.stderr.read().decode("utf-8", errors="replace")
+      raise RuntimeError(
+          f"Decoding failed to output any frames for {filepath}.\n"
+          f"ffmpeg stderr:\n{stderr_output}"
+      )
+
+    if decoded_frames < expected_frames:
+      logging.warning(
+          "Decoding may be truncated: %d frames < expected %d frames."
+          " Missing frames were zero-padded.",
+          decoded_frames,
+          expected_frames,
+      )
+  finally:
+    if process.stdout is not None:
+      process.stdout.close()
+    if process.poll() is None:
+      process.terminate()
+      try:
+        process.wait(timeout=5)
+      except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+    if process.stderr is not None:
+      process.stderr.close()
