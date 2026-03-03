@@ -21,6 +21,7 @@ limitations under the License.
 
 import os
 import sys
+import gc
 from typing import Any
 
 import torch
@@ -159,14 +160,18 @@ class UVQ1p5(nn.Module):
         chunk_tensor = (chunk_tensor / 255.0 - 0.5) * 2.0
 
         prediction_chunk = self.uvq1p5_core(chunk_tensor)
-        prediction_values = prediction_chunk.flatten().detach().cpu().tolist()
+        running_sum += float(prediction_chunk.sum().item())
+        total_frames += int(prediction_chunk.numel())
+
         if include_per_frame_stats and frame_scores is not None:
-          frame_scores.extend(prediction_values)
-        running_sum += float(sum(prediction_values))
-        total_frames += len(prediction_values)
+          frame_scores.extend(
+              prediction_chunk.flatten().detach().cpu().tolist()
+          )
 
         del prediction_chunk
         del chunk_tensor
+        del chunk
+        gc.collect()
         if device == "cuda":
           torch.cuda.empty_cache()
 
