@@ -342,13 +342,13 @@ def load_video_1p5_in_chunks(
 
       decoded_frames += bytes_read // single_frame_size
       uint_chunk = np.frombuffer(
-          byte_buffer, dtype=np.uint8, count=current_chunk_bytes
+          byte_buffer_view[:current_chunk_bytes], dtype=np.uint8
       ).reshape((current_chunk_frames, video_height, video_width, 3))
 
-      # Return a copy so each yielded chunk has an independent backing buffer.
-      # This avoids retaining/reusing a large mutable buffer across iterations
-      # in downstream frameworks.
-      yield uint_chunk.copy()
+      # IMPORTANT: yield a view over a fixed reusable buffer to keep memory
+      # usage bounded to roughly one chunk. Callers must fully consume/copy
+      # the chunk before requesting the next one.
+      yield uint_chunk
       frames_emitted += current_chunk_frames
 
     return_code = process.wait()
