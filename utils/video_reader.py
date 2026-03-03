@@ -278,6 +278,8 @@ def load_video_1p5_in_chunks(
       ]
   )
 
+  single_frame_size = video_width * video_height * 3
+  expected_frames = video_length * video_fps
   cmd = [
       ffmpeg_path,
       "-loglevel",
@@ -289,6 +291,8 @@ def load_video_1p5_in_chunks(
       filter_chain,
       "-r",
       str(video_fps),
+      "-frames:v",
+      str(expected_frames),
       "-f",
       "rawvideo",
       "-pix_fmt",
@@ -297,8 +301,6 @@ def load_video_1p5_in_chunks(
   ]
   logging.info("Run with cmd: %s", " ".join(cmd))
 
-  single_frame_size = video_width * video_height * 3
-  expected_frames = video_length * video_fps
   if expected_frames <= 0:
     raise ValueError(
         "Expected frame count must be positive. Got "
