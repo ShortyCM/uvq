@@ -149,10 +149,9 @@ class UVQ1p5(nn.Module):
         # Convert (frames, H, W, 3) -> (frames, 1, 3, H, W)
         chunk_tensor = torch.from_numpy(chunk).permute(0, 3, 1, 2).unsqueeze(1)
         prediction_chunk = self.uvq1p5_core(chunk_tensor.to(device))
-        prediction_flat = prediction_chunk.flatten().detach().cpu()
-        running_sum += float(prediction_flat.sum().item())
-        prediction_values = prediction_flat.tolist()
+        prediction_values = prediction_chunk.flatten().detach().cpu().tolist()
         frame_scores.extend(prediction_values)
+        running_sum += float(sum(prediction_values))
         total_frames += len(prediction_values)
 
     if total_frames == 0:
